@@ -31,6 +31,7 @@ from Backend.helper.custom_dl import ByteStreamer, _speed_test_single_client, ru
 from Backend.helper.encrypt import decode_string, encode_string
 from Backend.helper.health import run_health_checks
 from Backend.helper.manual_add import resolve_telegram_message, stamp_caption_by_ref
+from Backend.helper.pyro import resolve_video_thumb_url
 from Backend.helper.requests_manager import (
     delete_request,
     list_requests,
@@ -247,6 +248,8 @@ async def update_media_api(
                 except (ValueError, TypeError):
                     pass
         update_data = {k: v for k, v in update_data.items() if v != ""}
+        if "title" in update_data:
+            update_data["title_english"] = update_data["title"]
         result = await db.update_document(media_type, tmdb_id, db_index, update_data)
         if result:
             return {"message": "Media updated successfully"}
@@ -1278,11 +1281,15 @@ async def manual_add_media_api(payload: dict) -> dict:
         base["imdb_id"] = f"tg{abs(int(base['tmdb_id']))}"
     _fill_placeholder_metadata(base)
 
-    #----- Store the file thumbnail as a base-relative path so it survives base_url changes
     thumb_url = ""
     if primary.get("has_thumb"):
         thumb_enc = await encode_string({"chat_id": int(primary["chat_id"]), "msg_id": int(primary["msg_id"])})
-        thumb_url = f"/thumb/{thumb_enc}"
+        try:
+            chat_ref = int(f"-100{str(primary['chat_id']).replace('-100', '')}")
+            msg = await client.get_messages(chat_ref, int(primary["msg_id"]))
+            thumb_url = await resolve_video_thumb_url(client, msg, thumb_enc)
+        except Exception:
+            thumb_url = f"/thumb/{thumb_enc}"
 
     #----- Split parts share one quality entry via a common group key
     group_key = f"manual:{primary['chat_id']}:{quality}:{secrets.token_hex(6)}" if is_split else None
@@ -1302,6 +1309,8 @@ async def manual_add_media_api(payload: dict) -> dict:
             "episode_overview": payload.get("episode_overview") or "",
             "episode_released": payload.get("episode_released") or "",
         }
+    elif thumb_url and not base.get("backdrop"):
+        base["backdrop"] = thumb_url
 
     for index, part in enumerate(resolved_parts, start=1):
         p_channel = int(part["chat_id"])
@@ -1663,7 +1672,7 @@ async def update_catalog_order_api(payload: dict):
     return {"ok": True, "message": "Catalog order saved."}
 
 
-async def get_user_activity_api(page: int = 1, per_page: int = 12):
+async def get_user_activity_api(page: int = 1, per_page: int = 5):
     try:
         return await get_activity_overview(page, per_page)
     except Exception as e:
@@ -2398,6 +2407,13 @@ async def import_config_api(payload: dict) -> dict:
 #----- Lightweight liveness probe; start_time changes on every boot (restart detection)
 async def health_api() -> dict:
     return {"status": "ok", "start_time": StartTime, "version": __version__}
+
+
+async def version_status_api(force: bool = False) -> dict:
+    from Backend.helper.version_check import check_upstream_version, get_version_status
+    if force:
+        await check_upstream_version(force=True)
+    return {"status": "success", "data": get_version_status()}
 
 
 #----- Full diagnostics report (DBs, bot clients, TMDB, base URL)

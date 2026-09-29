@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from Backend import __version__
-from Backend.fastapi.themes import DEFAULT_THEME, get_theme
+from Backend.fastapi.themes import DEFAULT_THEME, DEFAULT_STYLE, get_theme
 from Backend.fastapi.routes.api_routes import (
     add_custom_catalog_item_api,
     add_subscription_plan_api,
@@ -77,6 +77,7 @@ from Backend.fastapi.routes.api_routes import (
     set_manual_session_api,
     health_api,
     health_report_api,
+    version_status_api,
     setup_status_api,
     link_token_user_api,
     list_custom_catalogs_api,
@@ -130,10 +131,8 @@ from Backend.fastapi.routes.template_routes import (
     login_post,
     logout,
     media_management_page,
-    public_status_page,
     settings_page,
     set_theme,
-    stremio_guide_page,
     tools_page,
 )
 from Backend.fastapi.security.credentials import require_auth
@@ -165,6 +164,8 @@ except Exception:
 @app.on_event("startup")
 async def _startup():
     asyncio.create_task(decay_client_failures())
+    from Backend.helper.version_check import version_check_loop
+    asyncio.create_task(version_check_loop())
 
 
 #----- Streaming and Stremio routers
@@ -187,13 +188,14 @@ async def logout_route(request: Request):
     return await logout(request)
 
 @app.post("/set-theme")
-async def set_theme_route(request: Request, theme: str = Form(...)):
-    return await set_theme(request, theme)
+async def set_theme_route(request: Request, theme: str = Form(None), style: str = Form(None)):
+    return await set_theme(request, theme, style)
 
 @app.get("/manifest.webmanifest")
 async def pwa_manifest(request: Request):
     theme_name = request.session.get("theme", DEFAULT_THEME)
-    theme = get_theme(theme_name)
+    style_name = request.session.get("style", DEFAULT_STYLE)
+    theme = get_theme(theme_name, style_name)
     return JSONResponse(
         {
             "name": "Telegram Stremio",
@@ -227,7 +229,8 @@ async def pwa_manifest(request: Request):
 @app.get("/pwa-icon.svg")
 async def pwa_icon(request: Request):
     theme_name = request.session.get("theme", DEFAULT_THEME)
-    theme = get_theme(theme_name)
+    style_name = request.session.get("style", DEFAULT_STYLE)
+    theme = get_theme(theme_name, style_name)
     primary = theme["colors"]["primary"]
     svg = (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
@@ -254,13 +257,9 @@ async def service_worker():
         headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"}
     )
 
-@app.get("/status", response_class=HTMLResponse)
-async def public_status(request: Request):
-    return await public_status_page(request)
-
-@app.get("/stremio", response_class=HTMLResponse)
-async def stremio_guide(request: Request):
-    return await stremio_guide_page(request)
+@app.get("/status")
+async def public_status():
+    return {"status": "ok", "version": __version__}
 
 @app.get("/open/{app_name}/{media_type}/{content_id}", response_class=HTMLResponse)
 async def open_in_app(app_name: str, media_type: str, content_id: str):
@@ -381,7 +380,7 @@ async def get_stream_analytics(_: bool = Depends(require_auth)):
     return await get_stream_analytics_api()
 
 @app.get("/api/admin/user-activity")
-async def get_user_activity(page: int = 1, per_page: int = 12, _: bool = Depends(require_auth)):
+async def get_user_activity(page: int = 1, per_page: int = 5, _: bool = Depends(require_auth)):
     return await get_user_activity_api(page, per_page)
 
 @app.post("/api/admin/clear-analytics")
@@ -732,6 +731,10 @@ async def admin_health(_: bool = Depends(require_auth)):
 @app.get("/api/admin/health/report")
 async def admin_health_report(fresh: bool = Query(False), _: bool = Depends(require_auth)):
     return await health_report_api(force=fresh)
+
+@app.get("/api/admin/version")
+async def admin_version(force: bool = Query(False), _: bool = Depends(require_auth)):
+    return await version_status_api(force=force)
 
 @app.get("/api/admin/setup-status")
 async def admin_setup_status(_: bool = Depends(require_auth)):
